@@ -1,16 +1,58 @@
-# Fraud detection: tabular, anomaly, and graph models
+# Transaction Fraud Detection with PyTorch
 
-This project compares three PyTorch approaches on entity-aware fraud data:
+I started this project to compare three different ways of looking at the same fraud problem: unusual transactions, known fraud patterns, and relationships between accounts. Most examples only train a classifier on individual rows. Here I also wanted to test whether a transaction graph can pick up coordinated behaviour that a row-by-row model misses.
 
-1. An autoencoder trained only on legitimate transactions. Reconstruction error is the anomaly score.
-2. A residual MLP trained with focal loss for severe class imbalance.
-3. A GraphSAGE node classifier whose transaction nodes are connected by shared entities. Edges are causal (past to future), so test transactions cannot leak information into training nodes.
+The project currently supports PaySim and IEEE-CIS. I am using PaySim for the first full experiment because it includes account identifiers that can be used to build a graph.
 
-The final comparison includes a validation-weighted ensemble. Model selection uses PR-AUC and a business cost matrix, not ROC-AUC alone.
+> **Project status:** the pipeline and API are implemented. I am currently running the first reproducible PaySim benchmark on Kaggle. I will add the measured results and plots here once that run is complete.
 
-## 1. Environment
+## What I am comparing
 
-Use Python 3.11 or 3.12. From this directory:
+| Approach | What it is meant to catch |
+| --- | --- |
+| Autoencoder | Transactions that do not look like legitimate behaviour seen during training |
+| Focal-loss MLP | Fraud patterns learned directly from labelled examples |
+| GraphSAGE GNN | Groups of transactions connected through shared accounts, cards, devices or merchants |
+| Weighted ensemble | Cases where the models provide complementary signals |
+
+The autoencoder is trained only on legitimate transactions. The supervised models use focal loss because fraud is rare and ordinary binary cross-entropy can be dominated by easy negative examples.
+
+## Features
+
+Alongside the original transaction fields, the pipeline calculates past-only behavioural features for each entity:
+
+- transaction count over 1, 6, 24 and 168 hours
+- amount sum and mean over the same windows
+- time since the previous transaction
+- log amount and whole-number amount flag
+- cyclical hour-of-day and day-of-week features
+
+The current transaction is added to an entity's history only after its features are calculated. This keeps it from contributing to its own velocity values.
+
+## Graph construction
+
+Each transaction is a node. Transactions are connected when they share an entity such as an origin account, destination account, card or device. Edges point from earlier transactions to later ones so training nodes cannot aggregate information from the future.
+
+Popular entities can create an impractically dense graph, so each transaction is connected to a limited number of earlier neighbours. GraphSAGE is then trained with neighbour sampling rather than full-graph batches.
+
+## Evaluation
+
+The split is chronological: 75% train, 10% validation and 15% test. Preprocessing is fitted on the training period, ensemble weights and thresholds are chosen on validation, and the test period is held back for the final comparison.
+
+I use PR-AUC as the main ranking metric. Accuracy and ROC-AUC can look strong on an imbalanced dataset even when the model produces too many false alerts.
+
+The operating threshold is selected using a simple business cost model:
+
+```text
+total cost = missed fraud × false-negative cost
+           + false alerts × false-positive cost
+```
+
+The defaults are $400 for missed fraud and $5 for customer friction. These are assumptions for the experiment, not universal values.
+
+## Running the project
+
+Python 3.11 or 3.12 is recommended.
 
 ```bash
 python -m venv .venv
@@ -19,25 +61,13 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-If `NeighborLoader` reports that no sampling backend is installed, install `pyg-lib` or the matching `torch-sparse` wheel using the [official PyTorch Geometric instructions](https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html) for your PyTorch/CUDA version.
-
-## 2. Data
-
-PaySim is the simplest path. Put `PS_20174392719_1491204439457_log.csv` in `data/`. Its `nameOrig` and `nameDest` fields provide the entity IDs required by the graph. Merchant destinations are represented by IDs beginning with `M`.
-
-IEEE-CIS is also supported. Put `train_transaction.csv` and `train_identity.csv` in one directory. Its card, address, device, and email fields become shared entities.
-
-Do not substitute the ULB credit-card dataset: it has no stable entity identifiers for graph construction.
-
-## 3. Train and compare
-
-First run a small integration check:
+Download PaySim's `PS_20174392719_1491204439457_log.csv` into `data/`, then run a small smoke test:
 
 ```bash
 python train_all.py --dataset paysim --data-dir data --quick --skip-gnn
 ```
 
-Then train all models:
+Run the full comparison:
 
 ```bash
 python train_all.py \
@@ -48,56 +78,32 @@ python train_all.py \
   --cost-fp 5
 ```
 
-For IEEE-CIS, change `--dataset ieee` and point `--data-dir` at its files. Use `--nrows 200000` while iterating before training on the full data.
+Model weights, preprocessing objects and evaluation reports are written to `artifacts/`. The dataset and generated artifacts are intentionally excluded from Git.
 
-The pipeline performs these operations:
+## API
 
-- chronological train/validation/test split (75%/10%/15%);
-- past-only velocity counts, sums, means, and time-since-last-transaction features;
-- train-only median, clipping, and scaling statistics;
-- autoencoder training on legitimate training rows only;
-- focal-loss classifier and GraphSAGE training;
-- validation-only ensemble weighting and cost-optimal threshold selection;
-- one final evaluation on the untouched test period.
-
-Outputs are written to `artifacts/`:
-
-- model weights and preprocessing artifacts;
-- `metadata.json`, containing feature order, thresholds, costs, and ensemble weights;
-- `evaluation.json`, containing PR-AUC, precision, recall, confusion matrices, and cost per transaction.
-
-## 4. Explanations
-
-The API returns Integrated Gradients explanations for flagged transactions when called with `?explain=true`. The saved legitimate background sample can also be used with `SHAPExplainer` in `explain.py` for offline analyst reports.
-
-## 5. Run the API
-
-After training:
+After training, start the FastAPI service with:
 
 ```bash
 uvicorn app:app --reload --port 8000
 ```
 
-Open `http://127.0.0.1:8000/docs`. Important endpoints are:
+The service includes single and batch scoring, optional Integrated Gradients explanations, a simulated transaction stream, health checks and PSI-based feature drift monitoring. Interactive API documentation is available at `http://127.0.0.1:8000/docs`.
 
-- `POST /score?explain=true` for one engineered transaction;
-- `POST /score/batch` for multiple transactions;
-- `GET /stream` for a simulated server-sent-event stream;
-- `GET /drift/report` for feature-level Population Stability Index values;
-- `GET /health` for artifact readiness.
+A single request can use the autoencoder/classifier ensemble immediately. GNN inference needs graph context, so a production version would connect each new transaction to a rolling transaction graph before scoring it.
 
-The request `features` must contain the raw engineered feature values named in `artifacts/metadata.json`; the service applies the saved scaler. In production, maintain per-entity rolling state in a feature store so velocity values at serving time use the same definitions as training.
+## Repository map
 
-## 6. Threshold decision
+- `train_all.py` — end-to-end training and evaluation
+- `velocity.py` — temporal and transaction-velocity features
+- `autoencoder.py` — reconstruction-based anomaly detector
+- `classifier.py` — residual MLP and focal loss
+- `graph_builder.py` — causal shared-entity transaction graph
+- `gnn.py` — GraphSAGE model and neighbour-sampled training
+- `metrics.py` — PR-AUC, cost metrics and threshold selection
+- `explain.py` — Integrated Gradients and SHAP helpers
+- `app.py` — FastAPI scoring and drift-monitoring service
 
-The default cost assumptions are $400 for missed fraud and $5 for unnecessary customer friction. `train_all.py` chooses the threshold on validation data that minimizes:
+## Known limitations
 
-```text
-total cost = false negatives × 400 + false positives × 5
-```
-
-This ratio is a business input, not a model constant. Re-estimate missed-fraud cost from actual loss and recovery rates, and false-positive cost from decline abandonment, support contacts, and churn. Re-run threshold selection when those economics or the fraud base rate change. Report recall and customer-friction volume alongside cost so a numerically optimal threshold does not conceal an unacceptable customer experience.
-
-## Production boundary
-
-The point-wise ensemble can score one transaction immediately. A GNN requires a context graph, so production GNN inference should attach the new transaction to a rolling graph or graph feature service before scoring. The included API is a demonstration service for the deployable autoencoder/classifier ensemble; the offline comparison still evaluates all three models and the full ensemble.
+PaySim is simulated data, so results should not be treated as evidence of real-world fraud performance. The API also expects engineered features; a production system would need an online feature store and a maintained graph service. Those boundaries are intentional rather than hidden behind the demo.
