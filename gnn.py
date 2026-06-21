@@ -191,6 +191,9 @@ def train_gnn(
         batch_size=batch_size,
         input_nodes=data.train_mask,
         shuffle=True,
+        # BatchNorm cannot train on a final batch containing one isolated
+        # seed node (for example, 333,825 nodes with batch_size=1,024).
+        drop_last=True,
     )
 
     val_loader = NeighborLoader(
