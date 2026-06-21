@@ -171,6 +171,9 @@ def train_gnn(
 
     device = torch.device(device)
     model.to(device)
+    data.edge_index = data.edge_index.contiguous()
+    if getattr(data, "edge_attr", None) is not None:
+        data.edge_attr = data.edge_attr.contiguous()
     # Class weight for focal loss
     from classifier import FocalLoss
     if focal_alpha is None:
@@ -279,6 +282,9 @@ def predict_gnn(
     assert PYG_AVAILABLE
     device = torch.device(device)
     model.eval().to(device)
+    data.edge_index = data.edge_index.contiguous()
+    if getattr(data, "edge_attr", None) is not None:
+        data.edge_attr = data.edge_attr.contiguous()
     loader = NeighborLoader(
         data,
         num_neighbors=num_neighbors,

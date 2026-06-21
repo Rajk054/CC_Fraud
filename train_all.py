@@ -173,7 +173,10 @@ def main() -> None:
 
             graph_df = pd.concat([train, val, test], ignore_index=True)
             graph_X = np.vstack([X_train, X_val, X_test])
-            graph_df.loc[:, features] = graph_X
+            # Assign whole columns so pandas replaces integer dtypes instead of
+            # trying to set scaled floats into the original integer blocks.
+            for feature_idx, feature_name in enumerate(features):
+                graph_df[feature_name] = graph_X[:, feature_idx]
             x, edge_index, edge_attr, y = build_transaction_graph(
                 graph_df, features, entities, label_col, max_degree=25 if args.quick else 50
             )

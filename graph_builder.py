@@ -126,9 +126,9 @@ def build_transaction_graph(
         attrs_merged = np.clip(attrs_merged, 0.0, 1.0)
 
         edge_index = torch.from_numpy(
-            unique_pairs.T.astype(np.int64)
-        )
-        edge_attr = torch.from_numpy(attrs_merged)
+            unique_pairs.T.astype(np.int64, copy=True)
+        ).contiguous()
+        edge_attr = torch.from_numpy(attrs_merged).contiguous()
 
     logger.info(
         f"Graph: {N:,} nodes | {edge_index.shape[1]:,} edges "
