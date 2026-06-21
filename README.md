@@ -2,9 +2,9 @@
 
 I started this project to compare three different ways of looking at the same fraud problem: unusual transactions, known fraud patterns, and relationships between accounts. Most examples only train a classifier on individual rows. Here I also wanted to test whether a transaction graph can pick up coordinated behaviour that a row-by-row model misses.
 
-The project currently supports PaySim and IEEE-CIS. I am using PaySim for the first full experiment because it includes account identifiers that can be used to build a graph.
+The project currently supports PaySim and IEEE-CIS. I used PaySim for the first benchmark because it includes account identifiers that can be used to build a graph.
 
-> **Project status:** the pipeline and API are implemented. I am currently running the first reproducible PaySim benchmark on Kaggle. I will add the measured results and plots here once that run is complete.
+The complete GPU run, including its output and logs, is available in the [Kaggle notebook](https://www.kaggle.com/code/rajkanchan/paysim-fraud-models-ae-mlp-and-graphsage).
 
 ## What I am comparing
 
@@ -16,6 +16,23 @@ The project currently supports PaySim and IEEE-CIS. I am using PaySim for the fi
 | Weighted ensemble | Cases where the models provide complementary signals |
 
 The autoencoder is trained only on legitimate transactions. The supervised models use focal loss because fraud is rare and ordinary binary cross-entropy can be dominated by easy negative examples.
+
+## Results
+
+I trained the four approaches on the first 1,000,000 PaySim rows. After keeping the transaction types where PaySim fraud occurs, the working dataset contained 445,100 transactions with a 0.1202% fraud rate. The chronological test period contained 66,765 transactions and 59 fraud cases.
+
+| Model | PR-AUC | Recall | Precision | Cost per transaction |
+| --- | ---: | ---: | ---: | ---: |
+| Ensemble | 0.5587 | **86.44%** | 6.25% | **$0.1052** |
+| Focal-loss MLP | **0.5798** | 72.88% | **24.43%** | $0.1058 |
+| GraphSAGE GNN | 0.4990 | 83.05% | 4.23% | $0.1430 |
+| Autoencoder | 0.0016 | 40.68% | 0.19% | $1.1623 |
+
+The classifier produced the best PR-AUC and precision. The ensemble was slightly cheaper under the assumed cost matrix because it caught more fraud, although that recall came with many more false alerts. The GNN also improved recall relative to the classifier, which is the behaviour I wanted to test, but its alert quality was lower. The autoencoder was not useful as a standalone detector on this experiment.
+
+Approving every transaction would cost about $0.3535 per transaction under the same $400 missed-fraud assumption. The ensemble reduced that estimated cost by roughly 70%, but this comparison depends directly on the chosen business costs.
+
+These are results from one temporal split on simulated data, not claims about production performance. The run used 15 epochs, a two-GPU Kaggle T4 environment and completed in 3 minutes 43 seconds.
 
 ## Features
 
@@ -73,7 +90,9 @@ Run the full comparison:
 python train_all.py \
   --dataset paysim \
   --data-dir data \
-  --epochs 30 \
+  --nrows 1000000 \
+  --epochs 15 \
+  --batch-size 1024 \
   --cost-fn 400 \
   --cost-fp 5
 ```
